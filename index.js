@@ -97,14 +97,14 @@ async function sendDailyNewsForGuild(guildId) {
       .setDescription(article.contentSnippet ? article.contentSnippet.slice(0, 300) + '...' : 'Click the title to read full story!')
       .setColor('#00FF7F')
       .setTimestamp(article.pubDate ? new Date(article.pubDate) : new Date())
-      .setFooter({ text: 'Good News Co. • Brightening your feed daily' });
+      .setFooter({ text: 'Good News Co. • Giving you the good news' });
 
     if (imageUrl) {
       embed.setImage(imageUrl);
     }
 
     await channel.send({
-      content: '☀️ **Here is your daily dose of uplifting news!**',
+      content: '☀️ **Here is the good news!**',
       embeds: [embed]
     }).catch(err => console.error(`Failed to send news article to guild ${guildId}:`, err));
 
