@@ -32,15 +32,22 @@ const client = new Client({
 
 const parser = new Parser();
 
-// Primary RSS Feed Source (Good News Network)
-const RSS_FEED_URL = 'https://www.goodnewsnetwork.org/feed/';
+// Array of 5 curated positive news RSS sources
+const RSS_FEEDS = [
+  { name: 'Good News Network', url: 'https://www.goodnewsnetwork.org/feed/' },
+  { name: 'Positive News UK', url: 'https://www.positive.news/feed/' },
+  { name: 'The Optimist Daily', url: 'https://www.optimistdaily.com/feed/' },
+  { name: 'Sunny Skyz', url: 'https://www.sunnyskyz.com/rss.xml' },
+  { name: 'Good News Shared', url: 'https://goodnews-shared.com/feed/' }
+];
 
 // Load local state configuration safely
-let state = { guilds: {} };
+let state = { guilds: {}, feedQueue: [] };
 if (fs.existsSync('state.json')) {
   try {
     const raw = JSON.parse(fs.readFileSync('state.json', 'utf8'));
-    if (raw.guilds) state = raw;
+    if (raw.guilds) state.guilds = raw.guilds;
+    if (Array.isArray(raw.feedQueue)) state.feedQueue = raw.feedQueue;
   } catch (e) {
     console.error("Error reading state.json:", e);
   }
@@ -50,6 +57,28 @@ function saveState() {
   fs.writeFileSync('state.json', JSON.stringify(state, null, 2));
 }
 
+// Fisher-Yates shuffle helper
+function shuffleArray(array) {
+  const arr = [...array];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+// Get next RSS feed ensuring no repeats within a 5-day cycle
+function getNextFeed() {
+  if (!state.feedQueue || state.feedQueue.length === 0) {
+    console.log('🔄 Replenishing and shuffling RSS feed queue...');
+    state.feedQueue = shuffleArray(RSS_FEEDS);
+  }
+
+  const selectedFeed = state.feedQueue.shift();
+  saveState();
+  return selectedFeed;
+}
+
 // Ensure guild registration & channel persistence
 function setGuildNewsChannel(guildId, channelId) {
   if (!state.guilds) state.guilds = {};
@@ -57,29 +86,24 @@ function setGuildNewsChannel(guildId, channelId) {
   saveState();
 }
 
-// Fetch and dispatch daily good news article for a specific guild
-async function sendDailyNewsForGuild(guildId) {
-  const guildData = state.guilds[guildId];
-  if (!guildData || !guildData.newsChannelId) {
-    console.log(`Skipping Good News dispatch for Guild ${guildId}: No news channel configured.`);
+// Fetch and dispatch daily good news article across registered servers
+async function dispatchDailyNews() {
+  const targetGuildIds = Object.keys(state.guilds).filter(id => state.guilds[id]?.newsChannelId);
+  if (targetGuildIds.length === 0) {
+    console.log('No servers registered for Good News dispatch.');
     return;
   }
 
+  const currentFeed = getNextFeed();
+  console.log(`📰 Pulling daily article from: ${currentFeed.name} (${currentFeed.url})`);
+
   try {
-    const channel = await client.channels.fetch(guildData.newsChannelId).catch(() => null);
-    if (!channel) {
-      console.log(`Skipping Good News dispatch for Guild ${guildId}: Channel ${guildData.newsChannelId} not found.`);
-      return;
-    }
-
-    // Fetch and parse RSS feed
-    const feed = await parser.parseURL(RSS_FEED_URL);
+    const feed = await parser.parseURL(currentFeed.url);
     if (!feed || !feed.items || feed.items.length === 0) {
-      console.log('No articles found in RSS feed.');
+      console.log(`No articles found in RSS feed for ${currentFeed.name}.`);
       return;
     }
 
-    // Select top latest article
     const article = feed.items[0];
 
     // Extract image thumbnail from content if available
@@ -92,24 +116,34 @@ async function sendDailyNewsForGuild(guildId) {
     }
 
     const embed = new EmbedBuilder()
-      .setTitle(`📰 ${article.title || 'Uplifting News of the Day!'}`)
-      .setURL(article.link || RSS_FEED_URL)
+      .setTitle(`📰 ${article.title || 'News of the Day!'}`)
+      .setURL(article.link || currentFeed.url)
       .setDescription(article.contentSnippet ? article.contentSnippet.slice(0, 300) + '...' : 'Click the title to read full story!')
       .setColor('#00FF7F')
       .setTimestamp(article.pubDate ? new Date(article.pubDate) : new Date())
-      .setFooter({ text: 'Good News Co. • Giving you the good news' });
+      .setFooter({ text: `Source: ${currentFeed.name} • Good News Co.` });
 
     if (imageUrl) {
       embed.setImage(imageUrl);
     }
 
-    await channel.send({
-      content: '☀️ **Here is the good news!**',
-      embeds: [embed]
-    }).catch(err => console.error(`Failed to send news article to guild ${guildId}:`, err));
+    for (const guildId of targetGuildIds) {
+      const channelId = state.guilds[guildId].newsChannelId;
+      try {
+        const channel = await client.channels.fetch(channelId).catch(() => null);
+        if (channel) {
+          await channel.send({
+            content: '☀️ **Here is the good news**',
+            embeds: [embed]
+          });
+        }
+      } catch (err) {
+        console.error(`Failed to send news to guild ${guildId}:`, err);
+      }
+    }
 
   } catch (err) {
-    console.error(`Error processing RSS feed for guild ${guildId}:`, err);
+    console.error(`Error processing RSS feed for ${currentFeed.name}:`, err);
   }
 }
 
@@ -140,9 +174,7 @@ client.once('clientReady', async () => {
   // Cron schedule for 12:00 PM Central Time
   cron.schedule('0 12 * * *', async () => {
     console.log('⏰ Running 12 PM Central Good News Dispatch across all servers...');
-    for (const guildId of Object.keys(state.guilds)) {
-      await sendDailyNewsForGuild(guildId);
-    }
+    await dispatchDailyNews();
   }, {
     scheduled: true,
     timezone: "America/Chicago"
@@ -171,9 +203,7 @@ client.on('interactionCreate', async (interaction) => {
       flags: 64
     });
 
-    for (const id of Object.keys(state.guilds)) {
-      await sendDailyNewsForGuild(id);
-    }
+    await dispatchDailyNews();
   }
 });
 
