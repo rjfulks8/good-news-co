@@ -151,10 +151,7 @@ async function dispatchDailyNews() {
 const commands = [
   new SlashCommandBuilder()
     .setName('set-news-channel')
-    .setDescription('Set the channel where daily uplifting news will be posted!'),
-  new SlashCommandBuilder()
-    .setName('test-news')
-    .setDescription('Force trigger the daily news dispatch across all registered servers!')
+    .setDescription('Set the channel where daily uplifting news will be posted!')
 ];
 
 client.once('clientReady', async () => {
@@ -194,16 +191,6 @@ client.on('interactionCreate', async (interaction) => {
       content: `✅ Success! Daily uplifting news will now be delivered to <#${interaction.channelId}> every day at 12:00 PM Central!`,
       flags: 64
     });
-  }
-
-  // --- /test-news ---
-  if (interaction.commandName === 'test-news') {
-    await interaction.reply({
-      content: '⚡ Fetching latest positive news and dispatching across registered servers...',
-      flags: 64
-    });
-
-    await dispatchDailyNews();
   }
 });
 
