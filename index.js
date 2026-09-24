@@ -41,20 +41,20 @@ const RSS_FEEDS = [
   { name: 'Good News Shared', url: 'https://goodnews-shared.com/feed/' }
 ];
 
-// Load local state configuration safely
-let state = { guilds: {}, feedQueue: [] };
-if (fs.existsSync('state.json')) {
+// Load local channels configuration safely
+let channelsData = { guilds: {}, feedQueue: [] };
+if (fs.existsSync('channels.json')) {
   try {
-    const raw = JSON.parse(fs.readFileSync('state.json', 'utf8'));
-    if (raw.guilds) state.guilds = raw.guilds;
-    if (Array.isArray(raw.feedQueue)) state.feedQueue = raw.feedQueue;
+    const raw = JSON.parse(fs.readFileSync('channels.json', 'utf8'));
+    if (raw.guilds) channelsData.guilds = raw.guilds;
+    if (Array.isArray(raw.feedQueue)) channelsData.feedQueue = raw.feedQueue;
   } catch (e) {
-    console.error("Error reading state.json:", e);
+    console.error("Error reading channels.json:", e);
   }
 }
 
 function saveState() {
-  fs.writeFileSync('state.json', JSON.stringify(state, null, 2));
+  fs.writeFileSync('channels.json', JSON.stringify(channelsData, null, 2));
 }
 
 // Fisher-Yates shuffle helper
@@ -69,26 +69,26 @@ function shuffleArray(array) {
 
 // Get next RSS feed ensuring no repeats within a 5-day cycle
 function getNextFeed() {
-  if (!state.feedQueue || state.feedQueue.length === 0) {
+  if (!channelsData.feedQueue || channelsData.feedQueue.length === 0) {
     console.log('🔄 Replenishing and shuffling RSS feed queue...');
-    state.feedQueue = shuffleArray(RSS_FEEDS);
+    channelsData.feedQueue = shuffleArray(RSS_FEEDS);
   }
 
-  const selectedFeed = state.feedQueue.shift();
+  const selectedFeed = channelsData.feedQueue.shift();
   saveState();
   return selectedFeed;
 }
 
 // Ensure guild registration & channel persistence
 function setGuildNewsChannel(guildId, channelId) {
-  if (!state.guilds) state.guilds = {};
-  state.guilds[guildId] = { newsChannelId: channelId };
+  if (!channelsData.guilds) channelsData.guilds = {};
+  channelsData.guilds[guildId] = { newsChannelId: channelId };
   saveState();
 }
 
 // Fetch and dispatch daily good news article across registered servers
 async function dispatchDailyNews() {
-  const targetGuildIds = Object.keys(state.guilds).filter(id => state.guilds[id]?.newsChannelId);
+  const targetGuildIds = Object.keys(channelsData.guilds).filter(id => channelsData.guilds[id]?.newsChannelId);
   if (targetGuildIds.length === 0) {
     console.log('No servers registered for Good News dispatch.');
     return;
@@ -116,7 +116,7 @@ async function dispatchDailyNews() {
     }
 
     const embed = new EmbedBuilder()
-      .setTitle(`📰 ${article.title || 'News of the Day!'}`)
+      .setTitle(`📰 ${article.title || 'Uplifting News of the Day!'}`)
       .setURL(article.link || currentFeed.url)
       .setDescription(article.contentSnippet ? article.contentSnippet.slice(0, 300) + '...' : 'Click the title to read full story!')
       .setColor('#00FF7F')
@@ -128,15 +128,21 @@ async function dispatchDailyNews() {
     }
 
     for (const guildId of targetGuildIds) {
-      const channelId = state.guilds[guildId].newsChannelId;
+      const channelId = channelsData.guilds[guildId].newsChannelId;
       try {
         const channel = await client.channels.fetch(channelId).catch(() => null);
-        if (channel) {
-          await channel.send({
-            content: '☀️ **Here is the good news**',
-            embeds: [embed]
-          });
+
+        if (!channel) {
+          console.warn(`⚠️ Channel ${channelId} in guild ${guildId} unreachable. Removing from channels.json.`);
+          delete channelsData.guilds[guildId];
+          saveState();
+          continue;
         }
+
+        await channel.send({
+          content: "Here's the good news",
+          embeds: [embed]
+        });
       } catch (err) {
         console.error(`Failed to send news to guild ${guildId}:`, err);
       }
@@ -147,7 +153,7 @@ async function dispatchDailyNews() {
   }
 }
 
-// Define Slash Commands
+// Define Slash Commands (Only set-news-channel registered)
 const commands = [
   new SlashCommandBuilder()
     .setName('set-news-channel')
@@ -155,7 +161,7 @@ const commands = [
 ];
 
 client.once('clientReady', async () => {
-  console.log(`☀️ Good News Co. is online as ${client.user.tag}!`);
+  console.log(`Good News Co. is online as ${client.user.tag}!`);
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
   try {
@@ -181,16 +187,23 @@ client.once('clientReady', async () => {
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
-  const guildId = interaction.guildId;
-
   // --- /set-news-channel ---
   if (interaction.commandName === 'set-news-channel') {
-    setGuildNewsChannel(guildId, interaction.channelId);
+    setGuildNewsChannel(interaction.guildId, interaction.channelId);
 
     await interaction.reply({
       content: `✅ Success! Daily uplifting news will now be delivered to <#${interaction.channelId}> every day at 12:00 PM Central!`,
       flags: 64
     });
+  }
+});
+
+// Auto-clean channels.json if bot gets kicked or leaves a server
+client.on('guildDelete', (guild) => {
+  if (channelsData.guilds && channelsData.guilds[guild.id]) {
+    delete channelsData.guilds[guild.id];
+    saveState();
+    console.log(`🗑️ Removed guild ${guild.id} from channels.json after bot left/kicked.`);
   }
 });
 
