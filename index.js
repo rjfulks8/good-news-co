@@ -86,7 +86,7 @@ function setGuildNewsChannel(guildId, channelId) {
   saveState();
 }
 
-// Fetch and dispatch daily good news article across registered servers
+// Fetch and dispatch daily good news article across registered servers with fallback
 async function dispatchDailyNews() {
   const targetGuildIds = Object.keys(channelsData.guilds).filter(id => channelsData.guilds[id]?.newsChannelId);
   if (targetGuildIds.length === 0) {
@@ -94,62 +94,74 @@ async function dispatchDailyNews() {
     return;
   }
 
-  const currentFeed = getNextFeed();
-  console.log(`📰 Pulling daily article from: ${currentFeed.name} (${currentFeed.url})`);
+  let article = null;
+  let currentFeed = null;
+  let attempts = 0;
+  const maxAttempts = RSS_FEEDS.length;
 
-  try {
-    const feed = await parser.parseURL(currentFeed.url);
-    if (!feed || !feed.items || feed.items.length === 0) {
-      console.log(`No articles found in RSS feed for ${currentFeed.name}.`);
-      return;
-    }
+  // Try feeds sequentially until one succeeds or we exhaust the list
+  while (attempts < maxAttempts && !article) {
+    currentFeed = getNextFeed();
+    attempts++;
+    console.log(`📰 Trying article pull from (${attempts}/${maxAttempts}): ${currentFeed.name} (${currentFeed.url})`);
 
-    const article = feed.items[0];
-
-    // Extract image thumbnail from content if available
-    let imageUrl = null;
-    if (article['media:content'] && article['media:content'].$.url) {
-      imageUrl = article['media:content'].$.url;
-    } else if (article.content) {
-      const imgMatch = article.content.match(/<img[^>]+src="([^">]+)"/);
-      if (imgMatch) imageUrl = imgMatch[1];
-    }
-
-    const embed = new EmbedBuilder()
-      .setTitle(`📰 ${article.title || 'Uplifting News of the Day!'}`)
-      .setURL(article.link || currentFeed.url)
-      .setDescription(article.contentSnippet ? article.contentSnippet.slice(0, 300) + '...' : 'Click the title to read full story!')
-      .setColor('#00FF7F')
-      .setTimestamp(article.pubDate ? new Date(article.pubDate) : new Date())
-      .setFooter({ text: `Source: ${currentFeed.name} • Good News Co.` });
-
-    if (imageUrl) {
-      embed.setImage(imageUrl);
-    }
-
-    for (const guildId of targetGuildIds) {
-      const channelId = channelsData.guilds[guildId].newsChannelId;
-      try {
-        const channel = await client.channels.fetch(channelId).catch(() => null);
-
-        if (!channel) {
-          console.warn(`⚠️ Channel ${channelId} in guild ${guildId} unreachable. Removing from channels.json.`);
-          delete channelsData.guilds[guildId];
-          saveState();
-          continue;
-        }
-
-        await channel.send({
-          content: "Here's the good news",
-          embeds: [embed]
-        });
-      } catch (err) {
-        console.error(`Failed to send news to guild ${guildId}:`, err);
+    try {
+      const feed = await parser.parseURL(currentFeed.url);
+      if (feed && feed.items && feed.items.length > 0) {
+        article = feed.items[0];
+      } else {
+        console.warn(`⚠️ Feed ${currentFeed.name} returned 0 items. Trying next...`);
       }
+    } catch (err) {
+      console.error(`❌ Failed to fetch feed ${currentFeed.name} (${err.message}). Trying next...`);
     }
+  }
 
-  } catch (err) {
-    console.error(`Error processing RSS feed for ${currentFeed.name}:`, err);
+  if (!article) {
+    console.error('❌ All RSS feeds failed today. Could not dispatch news.');
+    return;
+  }
+
+  // Extract image thumbnail from content if available
+  let imageUrl = null;
+  if (article['media:content'] && article['media:content'].$.url) {
+    imageUrl = article['media:content'].$.url;
+  } else if (article.content) {
+    const imgMatch = article.content.match(/<img[^>]+src="([^">]+)"/);
+    if (imgMatch) imageUrl = imgMatch[1];
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle(`📰 ${article.title || 'Uplifting News of the Day!'}`)
+    .setURL(article.link || currentFeed.url)
+    .setDescription(article.contentSnippet ? article.contentSnippet.slice(0, 300) + '...' : 'Click the title to read full story!')
+    .setColor('#00FF7F')
+    .setTimestamp(article.pubDate ? new Date(article.pubDate) : new Date())
+    .setFooter({ text: `Source: ${currentFeed.name} • Good News Co.` });
+
+  if (imageUrl) {
+    embed.setImage(imageUrl);
+  }
+
+  for (const guildId of targetGuildIds) {
+    const channelId = channelsData.guilds[guildId].newsChannelId;
+    try {
+      const channel = await client.channels.fetch(channelId).catch(() => null);
+
+      if (!channel) {
+        console.warn(`⚠️ Channel ${channelId} in guild ${guildId} unreachable. Removing from channels.json.`);
+        delete channelsData.guilds[guildId];
+        saveState();
+        continue;
+      }
+
+      await channel.send({
+        content: "Here's the good news",
+        embeds: [embed]
+      });
+    } catch (err) {
+      console.error(`Failed to send news to guild ${guildId}:`, err);
+    }
   }
 }
 
